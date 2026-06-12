@@ -1,0 +1,96 @@
+name: Deploy Quartz Themes preview to GitHub Pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "40 */4 * * *"
+  push:
+    branches:
+      - v5
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: ${{ github.repository != 'quartz-themes/quartz-themes-preview-template' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # Fetch all history for git info
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      # - name: Cache dependencies
+      #   uses: actions/cache@v5
+      #   with:
+      #     path: ~/.npm
+      #     key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+      #     restore-keys: |
+      #       ${{ runner.os }}-node-
+      #
+      - name: Cache Quartz plugins
+        uses: actions/cache@v5
+        with:
+          path: .quartz/plugins
+          key: ${{ runner.os }}-plugins-${{ hashFiles('quartz.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-plugins-
+
+      - name: Force HTTPS for GitHub dependencies
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global url."https://github.com/".insteadOf "git://github.com/"
+
+      - name: Install dependencies
+        uses: nick-fields/retry@v3
+        with:
+          command: npm ci
+          timeout_minutes: 3
+          max_attempts: 3
+      - name: Restore plugins from lockfile
+        uses: nick-fields/retry@v3
+        with:
+          command: |
+            npx quartz plugin resolve
+          timeout_minutes: 15
+          max_attempts: 3
+
+      - name: Build Quartz Docs
+        uses: nick-fields/retry@v3
+        with:
+          command: npx quartz build -d docs --verbose
+          timeout_minutes: 5
+          max_attempts: 3
+      - name: Verify root index.html exists
+        run: |
+          if [ ! -f public/index.html ]; then
+            echo "Missing public/index.html after build"
+            ls -la public
+            exit 1
+          fi
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
